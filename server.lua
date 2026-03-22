@@ -250,33 +250,6 @@ local function fail(targetId, message)
   })
 end
 
-local function handleDeleteOrder(sender, msg)
-  if not requireStaffPin(msg) then
-    fail(sender, "Unauthorized")
-    return
-  end
-
-  local orderId = trim(msg.orderId)
-  if orderId == "" then
-    fail(sender, "Order ID is required")
-    return
-  end
-
-  local order = getOrderById(orderId)
-  if not order then
-    fail(sender, "Order not found")
-    return
-  end
-
-  db.orders[orderId] = nil
-  safeSave()
-
-  ok(sender, {
-    message = "Order deleted",
-    orderId = orderId
-  })
-end
-
 local function handlePlaceOrder(sender, msg)
   local player = clampText(msg.player, MAX_PLAYER_NAME)
   local itemName = clampText(msg.itemName, MAX_ITEM_NAME)
@@ -433,6 +406,33 @@ local function handleUpdateStatus(sender, msg)
   })
 end
 
+local function handleDeleteOrder(sender, msg)
+  if not requireStaffPin(msg) then
+    fail(sender, "Unauthorized")
+    return
+  end
+
+  local orderId = trim(msg.orderId)
+  if orderId == "" then
+    fail(sender, "Order ID is required")
+    return
+  end
+
+  local order = getOrderById(orderId)
+  if not order then
+    fail(sender, "Order not found")
+    return
+  end
+
+  db.orders[orderId] = nil
+  safeSave()
+
+  ok(sender, {
+    message = "Order deleted",
+    orderId = orderId
+  })
+end
+
 local function handlePing(sender)
   ok(sender, { message = "Parcelo server online" })
 end
@@ -461,6 +461,8 @@ local function handleRequest(sender, msg)
     handleAssignTracking(sender, msg)
   elseif action == "update_status" then
     handleUpdateStatus(sender, msg)
+  elseif action == "delete_order" then
+    handleDeleteOrder(sender, msg)
   else
     fail(sender, "Unknown action")
   end
