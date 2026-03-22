@@ -1,13 +1,33 @@
--- Parcelo server
--- Put this on the hidden/main server computer
+-- Parcelo secure server
 
 local MODEM_SIDE = "back"
 local HOST_PROTOCOL = "parcelo_host"
 local HOSTNAME = "parcelo_server"
 local API_PROTOCOL = "parcelo_api"
 local DATA_FILE = "parcelo_db.txt"
+local STAFF_PIN = "4284"
 
-local HOLD_MS = 60 * 60 * 1000 -- 1 hour = 3 in-game days
+local HOLD_MS = 60 * 60 * 1000 -- 1 real hour
+local MAX_ITEM_NAME = 64
+local MAX_PLAYER_NAME = 32
+local MAX_ADDRESS = 128
+local MAX_NOTE = 160
+local MAX_LOCKER = 32
+
+local ALLOWED_STATUSES = {
+  ["Order Received"] = true,
+  ["Packaging"] = true,
+  ["Sorted at Warehouse"] = true,
+  ["Ready for Dispatch"] = true,
+  ["In Transit"] = true,
+  ["Arrived at Hub"] = true,
+  ["Out for Delivery"] = true,
+  ["Awaiting Pickup"] = true,
+  ["Delivered"] = true,
+  ["Final Pickup Day"] = true,
+  ["Return to Sender"] = true,
+  ["Returned"] = true
+}
 
 math.randomseed(os.epoch("utc"))
 
@@ -26,6 +46,14 @@ local function trim(s)
   return tostring(s):match("^%s*(.-)%s*$")
 end
 
+local function clampText(s, maxLen)
+  s = trim(s)
+  if #s > maxLen then
+    s = s:sub(1, maxLen)
+  end
+  return s
+end
+
 local function normalizeName(s)
   return trim(s):lower()
 end
@@ -34,23 +62,29 @@ local function deepCopy(tbl)
   return textutils.unserialise(textutils.serialise(tbl))
 end
 
-local function saveDb()
+local function safeSave()
   local f = fs.open(DATA_FILE, "w")
+  if not f then
+    return false
+  end
   f.write(textutils.serialise(db))
   f.close()
+  return true
 end
 
 local function loadDb()
   if fs.exists(DATA_FILE) then
     local f = fs.open(DATA_FILE, "r")
+    if not f then return end
     local raw = f.readAll()
     f.close()
+
     local loaded = textutils.unserialise(raw)
-    if type(loaded) == "table" then
+    if type(loaded) == "table" and type(loaded.orders) == "table" then
       db = loaded
     end
   else
-    saveDb()
+    safeSave()
   end
 end
 
@@ -74,10 +108,13 @@ local function addHistory(order, status, by, note)
     by = by or "system",
     note = note or ""
   })
+  while #order.history > 20 do
+    table.remove(order.history)
+  end
 end
 
 local function getOrderById(orderId)
-  return db.orders[orderId]
+  return db.orders[trim(orderId)]
 end
 
 local function getOrderByTracking(trackingId)
@@ -93,14 +130,17 @@ end
 local function getOrdersForPlayer(playerName)
   local out = {}
   local wanted = normalizeName(playerName)
+
   for _, order in pairs(db.orders) do
     if normalizeName(order.player) == wanted then
       table.insert(out, deepCopy(order))
     end
   end
+
   table.sort(out, function(a, b)
     return (a.createdAt or 0) > (b.createdAt or 0)
   end)
+
   return out
 end
 
@@ -109,19 +149,28 @@ local function getAllOrders()
   for _, order in pairs(db.orders) do
     table.insert(out, deepCopy(order))
   end
+
   table.sort(out, function(a, b)
     return (a.createdAt or 0) > (b.createdAt or 0)
   end)
+
   return out
 end
 
-local function setStatus(order, status, by, note, locker)
-  order.status = status or order.status
+local function requireStaffPin(msg)
+  return trim(msg.staffPin) == STAFF_PIN
+end
+
+local function setStatus(order, status, by, note, locker, lockerNote, deliveryNote)
+  if status and status ~= "" and ALLOWED_STATUSES[status] then
+    order.status = status
+  end
+
   order.updatedAt = nowMs()
   order.updatedBy = by or "system"
 
   if locker ~= nil then
-    locker = trim(locker)
+    locker = clampText(locker, MAX_LOCKER)
     if locker == "" then
       order.locker = nil
     else
@@ -129,9 +178,21 @@ local function setStatus(order, status, by, note, locker)
     end
   end
 
-  if status == "Awaiting Pickup" then
+  if note ~= nil then
+    order.note = clampText(note, MAX_NOTE)
+  end
+
+  if lockerNote ~= nil then
+    order.lockerNote = clampText(lockerNote, MAX_NOTE)
+  end
+
+  if deliveryNote ~= nil then
+    order.deliveryNote = clampText(deliveryNote, MAX_NOTE)
+  end
+
+  if order.status == "Awaiting Pickup" then
     order.pickupExpiresAt = nowMs() + HOLD_MS
-  elseif status == "Delivered" or status == "Returned" then
+  elseif order.status == "Delivered" or order.status == "Returned" then
     order.pickupExpiresAt = nil
   end
 
@@ -140,26 +201,35 @@ end
 
 local function createOrder(player, itemName, amount, deliveryType, address)
   local orderId = makeOrderId()
+
   local order = {
     orderId = orderId,
     trackingId = nil,
-    player = trim(player),
-    itemName = trim(itemName),
-    amount = tonumber(amount) or 1,
-    deliveryType = trim(deliveryType) ~= "" and trim(deliveryType) or "locker",
-    address = trim(address),
+    player = clampText(player, MAX_PLAYER_NAME),
+    itemName = clampText(itemName, MAX_ITEM_NAME),
+    amount = math.max(1, math.min(9999, tonumber(amount) or 1)),
+    deliveryType = clampText(deliveryType, 16),
+    address = clampText(address, MAX_ADDRESS),
     status = "Order Received",
     locker = nil,
+    note = "",
+    lockerNote = "",
+    deliveryNote = "",
     pickupExpiresAt = nil,
     createdAt = nowMs(),
     updatedAt = nowMs(),
-    updatedBy = trim(player),
+    updatedBy = clampText(player, MAX_PLAYER_NAME),
     history = {}
   }
 
+  if order.deliveryType == "" then
+    order.deliveryType = "locker"
+  end
+
   addHistory(order, "Order Received", order.player, "Order created")
   db.orders[orderId] = order
-  saveDb()
+  safeSave()
+
   return deepCopy(order)
 end
 
@@ -174,12 +244,15 @@ local function ok(targetId, extra)
 end
 
 local function fail(targetId, message)
-  sendResponse(targetId, { ok = false, message = message or "Unknown error" })
+  sendResponse(targetId, {
+    ok = false,
+    message = message or "Unknown error"
+  })
 end
 
 local function handlePlaceOrder(sender, msg)
-  local player = trim(msg.player)
-  local itemName = trim(msg.itemName)
+  local player = clampText(msg.player, MAX_PLAYER_NAME)
+  local itemName = clampText(msg.itemName, MAX_ITEM_NAME)
 
   if player == "" then
     fail(sender, "Player name is required")
@@ -199,31 +272,45 @@ local function handlePlaceOrder(sender, msg)
     msg.address
   )
 
-  ok(sender, { message = "Order placed", order = order })
+  ok(sender, {
+    message = "Order placed",
+    order = order
+  })
 end
 
 local function handleGetMyOrders(sender, msg)
-  local player = trim(msg.player)
+  local player = clampText(msg.player, MAX_PLAYER_NAME)
   if player == "" then
     fail(sender, "Player name is required")
     return
   end
 
-  ok(sender, { orders = getOrdersForPlayer(player) })
+  ok(sender, {
+    orders = getOrdersForPlayer(player)
+  })
 end
 
-local function handleGetAllOrders(sender)
-  ok(sender, { orders = getAllOrders() })
+local function handleGetAllOrders(sender, msg)
+  if not requireStaffPin(msg) then
+    fail(sender, "Unauthorized")
+    return
+  end
+
+  ok(sender, {
+    orders = getAllOrders()
+  })
 end
 
 local function handleGetOrder(sender, msg)
-  local order = getOrderById(trim(msg.orderId))
+  local order = getOrderById(msg.orderId)
   if not order then
     fail(sender, "Order not found")
     return
   end
 
-  ok(sender, { order = deepCopy(order) })
+  ok(sender, {
+    order = deepCopy(order)
+  })
 end
 
 local function handleGetByTracking(sender, msg)
@@ -239,11 +326,18 @@ local function handleGetByTracking(sender, msg)
     return
   end
 
-  ok(sender, { order = deepCopy(order) })
+  ok(sender, {
+    order = deepCopy(order)
+  })
 end
 
 local function handleAssignTracking(sender, msg)
-  local order = getOrderById(trim(msg.orderId))
+  if not requireStaffPin(msg) then
+    fail(sender, "Unauthorized")
+    return
+  end
+
+  local order = getOrderById(msg.orderId)
   if not order then
     fail(sender, "Order not found")
     return
@@ -253,35 +347,63 @@ local function handleAssignTracking(sender, msg)
     order.trackingId = makeTrackingId()
   end
 
+  local status = trim(msg.status)
+  if status == "" or not ALLOWED_STATUSES[status] then
+    status = "Packaging"
+  end
+
   setStatus(
     order,
-    trim(msg.status) ~= "" and trim(msg.status) or "Packaging",
-    trim(msg.staff),
-    trim(msg.note),
-    msg.locker
+    status,
+    clampText(msg.staff, MAX_PLAYER_NAME),
+    msg.note,
+    msg.locker,
+    msg.lockerNote,
+    msg.deliveryNote
   )
 
-  saveDb()
-  ok(sender, { message = "Tracking assigned", order = deepCopy(order) })
+  safeSave()
+
+  ok(sender, {
+    message = "Tracking assigned",
+    order = deepCopy(order)
+  })
 end
 
 local function handleUpdateStatus(sender, msg)
-  local order = getOrderById(trim(msg.orderId))
+  if not requireStaffPin(msg) then
+    fail(sender, "Unauthorized")
+    return
+  end
+
+  local order = getOrderById(msg.orderId)
   if not order then
     fail(sender, "Order not found")
     return
   end
 
   local status = trim(msg.status)
-  if status == "" then
-    fail(sender, "Status is required")
+  if status == "" or not ALLOWED_STATUSES[status] then
+    fail(sender, "Invalid status")
     return
   end
 
-  setStatus(order, status, trim(msg.staff), trim(msg.note), msg.locker)
-  saveDb()
+  setStatus(
+    order,
+    status,
+    clampText(msg.staff, MAX_PLAYER_NAME),
+    msg.note,
+    msg.locker,
+    msg.lockerNote,
+    msg.deliveryNote
+  )
 
-  ok(sender, { message = "Status updated", order = deepCopy(order) })
+  safeSave()
+
+  ok(sender, {
+    message = "Status updated",
+    order = deepCopy(order)
+  })
 end
 
 local function handlePing(sender)
@@ -303,7 +425,7 @@ local function handleRequest(sender, msg)
   elseif action == "get_my_orders" then
     handleGetMyOrders(sender, msg)
   elseif action == "get_all_orders" then
-    handleGetAllOrders(sender)
+    handleGetAllOrders(sender, msg)
   elseif action == "get_order" then
     handleGetOrder(sender, msg)
   elseif action == "get_by_tracking" then
@@ -313,7 +435,7 @@ local function handleRequest(sender, msg)
   elseif action == "update_status" then
     handleUpdateStatus(sender, msg)
   else
-    fail(sender, "Unknown action: " .. action)
+    fail(sender, "Unknown action")
   end
 end
 
@@ -338,5 +460,11 @@ print("Waiting for requests...")
 
 while true do
   local senderId, msg = rednet.receive(API_PROTOCOL)
-  handleRequest(senderId, msg)
+  local okRun, err = pcall(function()
+    handleRequest(senderId, msg)
+  end)
+
+  if not okRun then
+    print("Server error: " .. tostring(err))
+  end
 end
