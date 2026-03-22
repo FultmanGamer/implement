@@ -1,11 +1,10 @@
 -- Parcelo staff terminal
--- Put this on the staff computer
 
 local MODEM_SIDE = "back"
 local HOST_PROTOCOL = "parcelo_host"
 local HOSTNAME = "parcelo_server"
 local API_PROTOCOL = "parcelo_api"
-local STAFF_PIN = "1234"
+local STAFF_PIN = "4284"
 local CONFIG_FILE = "staff_config.txt"
 
 local staffName = nil
@@ -43,8 +42,7 @@ end
 
 local function ask(prompt, allowEmpty)
   write(prompt .. ": ")
-  local value = read()
-  value = trim(value)
+  local value = trim(read())
   if not allowEmpty then
     while value == "" do
       write(prompt .. ": ")
@@ -73,8 +71,10 @@ end
 local function loadConfig()
   if fs.exists(CONFIG_FILE) then
     local f = fs.open(CONFIG_FILE, "r")
+    if not f then return end
     local raw = f.readAll()
     f.close()
+
     local data = textutils.unserialise(raw)
     if type(data) == "table" then
       staffName = data.staffName
@@ -84,6 +84,7 @@ end
 
 local function saveConfig()
   local f = fs.open(CONFIG_FILE, "w")
+  if not f then return end
   f.write(textutils.serialise({
     staffName = staffName
   }))
@@ -99,6 +100,8 @@ local function request(payload)
   if not serverId then
     return nil, "Server not found. Is server.lua running?"
   end
+
+  payload.staffPin = STAFF_PIN
 
   rednet.send(serverId, payload, API_PROTOCOL)
   local senderId, response = rednet.receive(API_PROTOCOL, 5)
@@ -124,6 +127,7 @@ end
 local function login()
   clear()
   print("== Staff Login ==")
+
   local enteredName = ask("Staff name", false)
   local enteredPin = askSecret("Staff PIN")
 
@@ -136,6 +140,7 @@ local function login()
 
   staffName = enteredName
   saveConfig()
+
   print("")
   print("Logged in as " .. staffName)
   pause()
@@ -149,6 +154,12 @@ local function ensureLogin()
   return true
 end
 
+local function printIfHas(label, value)
+  if value and trim(value) ~= "" then
+    print(label .. ": " .. value)
+  end
+end
+
 local function showOrderDetails(order)
   clear()
   print("== Staff Order View ==")
@@ -158,9 +169,17 @@ local function showOrderDetails(order)
   print("Item: " .. (order.itemName or "-"))
   print("Amount: " .. tostring(order.amount or 0))
   print("Delivery: " .. (order.deliveryType or "-"))
-  print("Address: " .. ((order.address and order.address ~= "") and order.address or "-"))
+
+  printIfHas("Address", order.address)
   print("Status: " .. (order.status or "-"))
-  print("Locker: " .. (order.locker or "-"))
+
+  if order.locker then
+    print("Locker: " .. order.locker)
+  end
+
+  printIfHas("General Note", order.note)
+  printIfHas("Locker Note", order.lockerNote)
+  printIfHas("Delivery Note", order.deliveryNote)
 
   if order.pickupExpiresAt then
     local remaining = order.pickupExpiresAt - os.epoch("utc")
@@ -173,7 +192,7 @@ local function showOrderDetails(order)
     for i = 1, math.min(#order.history, 10) do
       local h = order.history[i]
       print((h.status or "?") .. " | " .. (h.by or "?"))
-      if h.note and h.note ~= "" then
+      if h.note and trim(h.note) ~= "" then
         print("  " .. h.note)
       end
     end
@@ -229,7 +248,9 @@ local function listOrders()
     local o = orders[i]
     print(o.orderId .. " | " .. o.itemName .. " x" .. tostring(o.amount))
     print("Status: " .. (o.status or "-"))
-    print("Tracking: " .. (o.trackingId or "Not assigned yet"))
+    if o.trackingId then
+      print("Tracking: " .. o.trackingId)
+    end
     print("Player: " .. (o.player or "-"))
     print("------------------------------")
   end
@@ -271,8 +292,10 @@ local function assignTracking()
     return
   end
 
-  local note = ask("Note (optional)", true)
+  local note = ask("General note (optional)", true)
   local locker = ask("Locker (optional)", true)
+  local lockerNote = ask("Locker note (optional)", true)
+  local deliveryNote = ask("Delivery note (optional)", true)
 
   local response, err = request({
     action = "assign_tracking",
@@ -280,7 +303,9 @@ local function assignTracking()
     status = status,
     staff = staffName,
     note = note,
-    locker = locker
+    locker = locker,
+    lockerNote = lockerNote,
+    deliveryNote = deliveryNote
   })
 
   showHeader()
@@ -310,8 +335,10 @@ local function updateStatus()
     return
   end
 
-  local locker = ask("Locker (optional, leave blank to keep current)", true)
-  local note = ask("Note (optional)", true)
+  local locker = ask("Locker (optional, blank clears/keeps depending use)", true)
+  local note = ask("General note (optional)", true)
+  local lockerNote = ask("Locker note (optional)", true)
+  local deliveryNote = ask("Delivery note (optional)", true)
 
   local response, err = request({
     action = "update_status",
@@ -319,7 +346,9 @@ local function updateStatus()
     status = status,
     staff = staffName,
     locker = locker,
-    note = note
+    note = note,
+    lockerNote = lockerNote,
+    deliveryNote = deliveryNote
   })
 
   showHeader()
