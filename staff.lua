@@ -365,6 +365,41 @@ local function updateStatus()
   pause()
 end
 
+local function deleteOrder()
+  if not ensureLogin() then return end
+
+  showHeader()
+  print("== Delete Order ==")
+  print("WARNING: This permanently deletes the order.")
+  print("")
+
+  local orderId = ask("Order ID", false)
+  local confirm = ask("Type DELETE to confirm", false)
+
+  if confirm ~= "DELETE" then
+    print("")
+    print("Delete cancelled.")
+    pause()
+    return
+  end
+
+  local response, err = request({
+    action = "delete_order",
+    orderId = orderId,
+    staff = staffName
+  })
+
+  showHeader()
+  if not response then
+    print("Error: " .. err)
+  elseif not response.ok then
+    print("Error: " .. (response.message or "Unknown error"))
+  else
+    print("Order deleted: " .. orderId)
+  end
+  pause()
+end
+
 local function searchByOrder()
   if not ensureLogin() then return end
 
@@ -443,10 +478,11 @@ while true do
   print("2. List Orders")
   print("3. Assign Tracking")
   print("4. Update Status")
-  print("5. Search by Order ID")
-  print("6. Search by Tracking Code")
-  print("7. Ping Server")
-  print("8. Exit")
+  print("5. Delete Order")
+  print("6. Search by Order ID")
+  print("7. Search by Tracking Code")
+  print("8. Ping Server")
+  print("9. Exit")
   print("")
 
   local choice = ask("Choose", false)
@@ -460,12 +496,14 @@ while true do
   elseif choice == "4" then
     updateStatus()
   elseif choice == "5" then
-    searchByOrder()
+    deleteOrder()
   elseif choice == "6" then
-    searchByTracking()
+    searchByOrder()
   elseif choice == "7" then
-    pingServer()
+    searchByTracking()
   elseif choice == "8" then
+    pingServer()
+  elseif choice == "9" then
     clear()
     print("Goodbye.")
     break
