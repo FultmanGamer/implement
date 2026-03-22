@@ -1,5 +1,4 @@
 -- Parcelo customer terminal
--- Put this on the normal player/customer computer
 
 local MODEM_SIDE = "back"
 local HOST_PROTOCOL = "parcelo_host"
@@ -27,8 +26,7 @@ end
 
 local function ask(prompt, allowEmpty)
   write(prompt .. ": ")
-  local value = read()
-  value = trim(value)
+  local value = trim(read())
   if not allowEmpty then
     while value == "" do
       write(prompt .. ": ")
@@ -52,8 +50,10 @@ end
 local function loadConfig()
   if fs.exists(CONFIG_FILE) then
     local f = fs.open(CONFIG_FILE, "r")
+    if not f then return end
     local raw = f.readAll()
     f.close()
+
     local data = textutils.unserialise(raw)
     if type(data) == "table" then
       currentPlayer = data.player
@@ -63,6 +63,7 @@ end
 
 local function saveConfig()
   local f = fs.open(CONFIG_FILE, "w")
+  if not f then return end
   f.write(textutils.serialise({
     player = currentPlayer
   }))
@@ -110,6 +111,12 @@ local function setPlayerName()
   pause()
 end
 
+local function printIfHas(label, value)
+  if value and trim(value) ~= "" then
+    print(label .. ": " .. value)
+  end
+end
+
 local function showOrderDetails(order)
   clear()
   print("== Order Details ==")
@@ -119,9 +126,17 @@ local function showOrderDetails(order)
   print("Item: " .. (order.itemName or "-"))
   print("Amount: " .. tostring(order.amount or 0))
   print("Delivery: " .. (order.deliveryType or "-"))
-  print("Address: " .. ((order.address and order.address ~= "") and order.address or "-"))
+
+  printIfHas("Address", order.address)
   print("Status: " .. (order.status or "-"))
-  print("Locker: " .. (order.locker or "-"))
+
+  if order.locker then
+    print("Locker: " .. order.locker)
+  end
+
+  printIfHas("General Note", order.note)
+  printIfHas("Locker Note", order.lockerNote)
+  printIfHas("Delivery Note", order.deliveryNote)
 
   if order.pickupExpiresAt then
     local remaining = order.pickupExpiresAt - os.epoch("utc")
@@ -130,11 +145,12 @@ local function showOrderDetails(order)
 
   print("")
   print("-- History --")
+
   if order.history and #order.history > 0 then
     for i = 1, math.min(#order.history, 8) do
       local h = order.history[i]
       print((h.status or "?") .. " | by " .. (h.by or "?"))
-      if h.note and h.note ~= "" then
+      if h.note and trim(h.note) ~= "" then
         print("  " .. h.note)
       end
     end
@@ -148,9 +164,7 @@ end
 local function placeOrder()
   if not currentPlayer then
     setPlayerName()
-    if not currentPlayer then
-      return
-    end
+    if not currentPlayer then return end
   end
 
   showHeader()
@@ -188,9 +202,7 @@ end
 local function myOrders()
   if not currentPlayer then
     setPlayerName()
-    if not currentPlayer then
-      return
-    end
+    if not currentPlayer then return end
   end
 
   showHeader()
@@ -227,7 +239,12 @@ local function myOrders()
     local o = orders[i]
     print(o.orderId .. " | " .. o.itemName .. " x" .. tostring(o.amount))
     print("Status: " .. (o.status or "-"))
-    print("Tracking: " .. (o.trackingId or "Not assigned yet"))
+    if o.trackingId then
+      print("Tracking: " .. o.trackingId)
+    end
+    if o.locker then
+      print("Locker: " .. o.locker)
+    end
     print("------------------------------")
   end
 
